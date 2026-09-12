@@ -104,7 +104,7 @@ By the end of this project, I will have a fully operational distributed order pr
 
 The following diagram shows the architecture for the event-driven order processing system.
 
-![Event-Driven Order Processing Architecture](./images/Event-Driven-Order-architecture-diagram.jpg)
+![Event-Driven Order Processing Architecture](./images/event-driven-order-architecture-diagram.jpg)
 
 ---
 
