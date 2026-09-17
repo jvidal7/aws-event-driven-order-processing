@@ -179,15 +179,13 @@ This will allow changes made to the table to trigger downstream processing later
 - Locate **DynamoDB stream details**
 - Enable DynamoDB Streams
 
-![DynamoDB Streams configuration](./images/03-dynamodb-streams-configuration.png)
-
 I configured the stream type as:
 
 ```text
 NEW_AND_OLD_IMAGES
 ```
 
-![DynamoDB stream type NEW_AND_OLD_IMAGES](./images/04-dynamodb-stream-type.png)
+![DynamoDB stream type NEW_AND_OLD_IMAGES](./images/03-dynamodb-stream-type.png)
 
 ---
 
@@ -200,7 +198,7 @@ Next, I created an IAM role that allows the Lambda function to interact with the
 - **Trusted entity type:** AWS Service
 - **Use case:** Lambda
 
-![IAM Lambda trusted entity configuration](./images/05-lambda-iam-role-setup.png)
+![IAM Lambda trusted entity configuration](./images/04-lambda-iam-role-setup.png)
 
 I attached the following managed policies:
 
@@ -216,7 +214,7 @@ For this lab, full-access policies are being used for simplicity. In a productio
 OrderServiceLambdaRole
 ```
 
-![OrderServiceLambdaRole configuration](./images/06-order-service-lambda-role.png)
+![OrderServiceLambdaRole configuration](./images/05-order-service-lambda-role.png)
 
 ---
 
@@ -229,7 +227,7 @@ I created an AWS Lambda function responsible for receiving order information, va
 - **Function name:** `CreateOrderFunction`
 - **Runtime:** `Node.js 24.x` or the latest available Node.js runtime
 
-![CreateOrderFunction configuration](./images/07-create-order-lambda-function.png)
+![CreateOrderFunction configuration](./images/06-create-order-lambda-function.png)
 
 For the execution role, I selected:
 
@@ -243,7 +241,7 @@ and assigned:
 OrderServiceLambdaRole
 ```
 
-![Lambda execution role configuration](./images/08-lambda-execution-role.png)
+![Lambda execution role configuration](./images/07-lambda-execution-role.png)
 
 ### Environment Variable
 
@@ -254,7 +252,7 @@ Key: ORDERS_TABLE_NAME
 Value: Orders
 ```
 
-![Lambda environment variable](./images/09-lambda-environment-variable.png)
+![Lambda environment variable](./images/08-lambda-environment-variable.png)
 
 The Lambda function performs the following tasks:
 
@@ -351,7 +349,7 @@ export const handler = async (event) => {
 
 After adding the code, I deployed the function.
 
-![CreateOrderFunction deployed](./images/10-create-order-lambda-deployed.png)
+![CreateOrderFunction deployed](./images/9-create-order-lambda-deployed.png)
 
 > **Note:** The function uses AWS SDK v3, which is included with newer Lambda Node.js runtimes.
 
@@ -369,14 +367,14 @@ Before connecting Lambda to API Gateway, I tested the function directly.
 }
 ```
 
-![Lambda test event configuration](./images/11-lambda-test-event.png)
+![Lambda test event configuration](./images/10-lambda-test-event.png)
 
 A successful test should return:
 
 - **Status code:** `201`
 - A JSON response containing the generated `orderId`
 
-![Successful Lambda test](./images/12-lambda-test-success.png)
+![Successful Lambda test](./images/11-lambda-test-success.png)
 
 I then opened:
 
@@ -386,11 +384,11 @@ DynamoDB → Orders → Explore table items
 
 and confirmed that the order was stored successfully.
 
-![DynamoDB Orders table items](./images/13-dynamodb-order-test.png)
+![DynamoDB Orders table items](./images/12-dynamodb-order-test.png)
 
 I also verified the individual order record and its stored attributes.
 
-![Order record stored in DynamoDB](./images/14-dynamodb-order-record.png)
+![Order record stored in DynamoDB](./images/13-dynamodb-order-record.png)
 
 Once the order appeared in DynamoDB, the core order creation logic was working correctly.
 
@@ -413,22 +411,22 @@ Next, I created an Amazon API Gateway **HTTP API** to expose the Lambda function
 - **Resource path:** `/order`
 - **Integration:** `CreateOrderFunction`
 
-![API Gateway POST order route](./images/15-api-gateway-order-route.png)
+![API Gateway POST order route](./images/14-api-gateway-order-route.png)
 
 I connected the route to the Lambda integration.
 
-![API Gateway Lambda integration](./images/16-api-gateway-lambda-integration.png)
+![API Gateway Lambda integration](./images/15-api-gateway-lambda-integration.png)
 
 ### Stage Configuration
 
 - **Stage name:** `prod`
 - **Auto deploy:** Disabled
 
-![API Gateway prod stage](./images/17-api-gateway-prod-stage.png)
+![API Gateway prod stage](./images/16-api-gateway-prod-stage.png)
 
 After creating the API, I copied the **Invoke URL**.
 
-![API Gateway invoke URL](./images/18-api-gateway-invoke-url.png)
+![API Gateway invoke URL](./images/17-api-gateway-invoke-url.png)
 
 The order endpoint follows this structure:
 
@@ -450,11 +448,11 @@ Because the frontend application sends requests to API Gateway from a browser, I
 - **Allowed methods:** `*`
 - **Allowed headers:** `*`
 
-![API Gateway CORS configuration](./images/19-api-gateway-cors.png)
+![API Gateway CORS configuration](./images/18-api-gateway-cors.png)
 
 After saving the configuration, I deployed the API to the `prod` stage.
 
-![API Gateway prod deployment](./images/20-api-gateway-prod-deployment.png)
+![API Gateway prod deployment](./images/19-api-gateway-prod-deployment.png)
 
 ---
 
@@ -475,7 +473,7 @@ The form collects:
 - Amount
 - Optional Notes
 
-![Frontend order submission application](./images/21-order-submission-app.png)
+![Frontend order submission application](./images/20-order-submission-app.png)
 
 Inside the frontend JavaScript, I replaced the placeholder API URL:
 
@@ -485,7 +483,7 @@ const API_URL = "https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com/prod/
 
 with the actual API Gateway endpoint.
 
-![Frontend API Gateway endpoint](./images/22-frontend-api-url.png)
+![Frontend API Gateway endpoint](./images/21-frontend-api-url.png)
 
 ### Run the Frontend Locally
 
@@ -497,7 +495,7 @@ From the folder containing `index.html`, I ran:
 python3 -m http.server 5500
 ```
 
-![Local Python HTTP server](./images/23-local-http-server.png)
+![Local Python HTTP server](./images/22-local-http-server.png)
 
 I then opened the application in the browser using:
 
@@ -505,7 +503,7 @@ I then opened the application in the browser using:
 http://localhost:5500/index.html
 ```
 
-![Frontend application running on localhost](./images/24-frontend-localhost.png)
+![Frontend application running on localhost](./images/23-frontend-localhost.png)
 
 ---
 
@@ -520,7 +518,7 @@ I entered:
 - Amount
 - Notes
 
-![Completed order submission form](./images/25-order-form-test.png)
+![Completed order submission form](./images/24-order-form-test.png)
 
 After clicking **Submit Order**, the application returned a success message containing the generated order ID.
 
@@ -528,7 +526,7 @@ After clicking **Submit Order**, the application returned a success message cont
 Order created successfully! Order ID: ...
 ```
 
-![Successful order submission with generated Order ID](./images/26-order-submission-success.png)
+![Successful order submission with generated Order ID](./images/25-order-submission-success.png)
 
 Finally, I returned to:
 
@@ -546,7 +544,7 @@ and confirmed that the new order contained:
 - `product`
 - `status = PENDING`
 
-![Final order stored in DynamoDB](./images/27-final-dynamodb-order.png)
+![Final order stored in DynamoDB](./images/26-final-dynamodb-order.png)
 
 ---
 
