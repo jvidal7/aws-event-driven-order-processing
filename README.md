@@ -473,7 +473,7 @@ The form collects:
 - Amount
 - Optional Notes
 
-![Frontend order submission application](./images/19-order-submission-app.png)
+![Frontend order submission application](./images/20-order-submission-app.png)
 
 Inside the frontend JavaScript, I replaced the placeholder API URL:
 
