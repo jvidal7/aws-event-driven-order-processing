@@ -214,7 +214,7 @@ For this lab, full-access policies are being used for simplicity. In a productio
 OrderServiceLambdaRole
 ```
 
-![OrderServiceLambdaRole configuration](./images/05-order-service-lambda-role.png)
+![OrderServiceLambdaRole configuration](./images/00-order-service-lambda-role.png)
 
 ---
 
@@ -227,7 +227,7 @@ I created an AWS Lambda function responsible for receiving order information, va
 - **Function name:** `CreateOrderFunction`
 - **Runtime:** `Node.js 24.x` or the latest available Node.js runtime
 
-![CreateOrderFunction configuration](./images/06-create-order-lambda-function.png)
+![CreateOrderFunction configuration](./images/05-create-order-lambda-function.png)
 
 For the execution role, I selected:
 
@@ -241,7 +241,7 @@ and assigned:
 OrderServiceLambdaRole
 ```
 
-![Lambda execution role configuration](./images/07-lambda-execution-role.png)
+![Lambda execution role configuration](./images/06-lambda-execution-role.png)
 
 ### Environment Variable
 
@@ -252,7 +252,7 @@ Key: ORDERS_TABLE_NAME
 Value: Orders
 ```
 
-![Lambda environment variable](./images/08-lambda-environment-variable.png)
+![Lambda environment variable](./images/07-lambda-environment-variable.png)
 
 The Lambda function performs the following tasks:
 
@@ -349,7 +349,7 @@ export const handler = async (event) => {
 
 After adding the code, I deployed the function.
 
-![CreateOrderFunction deployed](./images/9-create-order-lambda-deployed.png)
+![CreateOrderFunction deployed](./images/08-create-order-lambda-deployed.png)
 
 > **Note:** The function uses AWS SDK v3, which is included with newer Lambda Node.js runtimes.
 
@@ -367,14 +367,14 @@ Before connecting Lambda to API Gateway, I tested the function directly.
 }
 ```
 
-![Lambda test event configuration](./images/10-lambda-test-event.png)
+![Lambda test event configuration](./images/09-lambda-test-event.png)
 
 A successful test should return:
 
 - **Status code:** `201`
 - A JSON response containing the generated `orderId`
 
-![Successful Lambda test](./images/11-lambda-test-success.png)
+![Successful Lambda test](./images/10-lambda-test-success.png)
 
 I then opened:
 
@@ -384,11 +384,11 @@ DynamoDB → Orders → Explore table items
 
 and confirmed that the order was stored successfully.
 
-![DynamoDB Orders table items](./images/12-dynamodb-order-test.png)
+![DynamoDB Orders table items](./images/11-dynamodb-order-test.png)
 
 I also verified the individual order record and its stored attributes.
 
-![Order record stored in DynamoDB](./images/13-dynamodb-order-record.png)
+![Order record stored in DynamoDB](./images/12-dynamodb-order-record.png)
 
 Once the order appeared in DynamoDB, the core order creation logic was working correctly.
 
@@ -411,22 +411,22 @@ Next, I created an Amazon API Gateway **HTTP API** to expose the Lambda function
 - **Resource path:** `/order`
 - **Integration:** `CreateOrderFunction`
 
-![API Gateway POST order route](./images/14-api-gateway-order-route.png)
+![API Gateway POST order route](./images/13-api-gateway-order-route.png)
 
 I connected the route to the Lambda integration.
 
-![API Gateway Lambda integration](./images/15-api-gateway-lambda-integration.png)
+![API Gateway Lambda integration](./images/14-api-gateway-lambda-integration.png)
 
 ### Stage Configuration
 
 - **Stage name:** `prod`
 - **Auto deploy:** Disabled
 
-![API Gateway prod stage](./images/16-api-gateway-prod-stage.png)
+![API Gateway prod stage](./images/15-api-gateway-prod-stage.png)
 
 After creating the API, I copied the **Invoke URL**.
 
-![API Gateway invoke URL](./images/17-api-gateway-invoke-url.png)
+![API Gateway invoke URL](./images/16-api-gateway-invoke-url.png)
 
 The order endpoint follows this structure:
 
@@ -448,11 +448,11 @@ Because the frontend application sends requests to API Gateway from a browser, I
 - **Allowed methods:** `*`
 - **Allowed headers:** `*`
 
-![API Gateway CORS configuration](./images/18-api-gateway-cors.png)
+![API Gateway CORS configuration](./images/17-api-gateway-cors.png)
 
 After saving the configuration, I deployed the API to the `prod` stage.
 
-![API Gateway prod deployment](./images/19-api-gateway-prod-deployment.png)
+![API Gateway prod deployment](./images/18-api-gateway-prod-deployment.png)
 
 ---
 
@@ -473,7 +473,7 @@ The form collects:
 - Amount
 - Optional Notes
 
-![Frontend order submission application](./images/20-order-submission-app.png)
+![Frontend order submission application](./images/19-order-submission-app.png)
 
 Inside the frontend JavaScript, I replaced the placeholder API URL:
 
