@@ -1036,3 +1036,687 @@ The system now includes:
 The next stages of the project will introduce additional reliability features such as retries, dead-letter handling, and separate routing logic.
 
 ---
+
+# 4.4 Add Reliability with SQS, Retries & DLQs
+
+---
+
+## Overview
+
+The order processing system currently follows this workflow:
+
+```text
+Frontend → API Gateway → CreateOrderFunction → DynamoDB
+DynamoDB Streams → ProcessOrderFunction → DynamoDB
+```
+
+The event-driven workflow is working, but it still needs better failure handling.
+
+If order processing fails, the system currently has no dedicated mechanism for:
+
+- Retrying temporary failures
+- Handling traffic spikes
+- Isolating messages that repeatedly fail
+- Inspecting failed events later for troubleshooting
+
+In this section, I will introduce **Amazon SQS** and a **Dead-Letter Queue (DLQ)** to make the order processing workflow more resilient.
+
+The updated order lifecycle will be:
+
+```text
+PENDING → PROCESSING → COMPLETED / FAILED
+```
+
+The system will also introduce a worker Lambda that applies business rules and processes messages asynchronously.
+
+---
+
+## Step 1: Create the Dead-Letter Queue
+
+I first created the Dead-Letter Queue because the main processing queue will reference it.
+
+### Queue Configuration
+
+- **Queue type:** Standard
+- **Queue name:** `order-processing-dlq`
+
+![Order processing Dead-Letter Queue configuration](./images/36-order-processing-dlq.png)
+
+The DLQ will store messages that repeatedly fail processing so they can be inspected later.
+
+---
+
+## Step 2: Create the Main Order Processing Queue
+
+Next, I created the main SQS queue that will hold orders waiting for background processing.
+
+### Queue Configuration
+
+- **Queue type:** Standard
+- **Queue name:** `order-processing-queue`
+
+![Order processing queue configuration](./images/37-order-processing-queue.png)
+
+### Dead-Letter Queue Configuration
+
+I enabled the Dead-Letter Queue option and configured:
+
+- **DLQ:** `order-processing-dlq`
+- **Maximum receives:** `3`
+
+![SQS Dead-Letter Queue configuration](./images/38-sqs-dlq-configuration.png)
+
+This means that if a message fails processing three times, SQS will move it to the DLQ.
+
+---
+
+## Step 3: Update ProcessOrderFunction
+
+Previously, `ProcessOrderFunction` immediately changed orders to `PROCESSED`.
+
+The workflow will now be changed so that `ProcessOrderFunction`:
+
+1. Changes the order status from `PENDING` to `PROCESSING`
+2. Sends the order to Amazon SQS
+3. Allows a separate worker Lambda to determine the final result
+
+---
+
+### Add the SQS Environment Variable
+
+Inside `ProcessOrderFunction`, I added another environment variable.
+
+```text
+Key: ORDER_QUEUE_URL
+Value: <order-processing-queue URL>
+```
+
+The existing table environment variable remains:
+
+```text
+ORDERS_TABLE_NAME = Orders
+```
+
+![ProcessOrderFunction SQS environment variable](./images/39-process-order-sqs-environment-variable.png)
+
+---
+
+### Update ProcessOrderFunction Code
+
+The function now updates the order to `PROCESSING` and publishes the order details to SQS.
+
+```javascript
+import { DynamoDBClient, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+
+const ddbClient = new DynamoDBClient();
+const sqsClient = new SQSClient();
+
+export const handler = async (event) => {
+  console.log(
+    "Received DynamoDB Stream event:",
+    JSON.stringify(event, null, 2)
+  );
+
+  const tableName = process.env.ORDERS_TABLE_NAME;
+  const queueUrl = process.env.ORDER_QUEUE_URL;
+
+  const records = event.Records || [];
+
+  for (const record of records) {
+    const eventName = record.eventName;
+
+    if (eventName !== "INSERT") {
+      console.log(`Skipping event ${eventName}`);
+      continue;
+    }
+
+    const newImage = record.dynamodb?.NewImage;
+
+    if (!newImage) {
+      console.log("No NewImage found, skipping");
+      continue;
+    }
+
+    const orderId = newImage.orderId.S;
+    const customerName = newImage.customerName.S;
+    const amount = Number(newImage.amount.N);
+    const product = newImage.product.S;
+    const notes = newImage.notes?.S || "";
+    const createdAt = newImage.createdAt.S;
+
+    console.log(
+      `ProcessOrderFunction picked up order ${orderId} (${product}) amount: ${amount}`
+    );
+
+    const processingStartedAt = new Date().toISOString();
+
+    const updateParams = new UpdateItemCommand({
+      TableName: tableName,
+      Key: {
+        orderId: { S: orderId },
+      },
+      UpdateExpression:
+        "SET #s = :status, processingStartedAt = :processingStartedAt",
+      ExpressionAttributeNames: {
+        "#s": "status",
+      },
+      ExpressionAttributeValues: {
+        ":status": { S: "PROCESSING" },
+        ":processingStartedAt": { S: processingStartedAt },
+      },
+    });
+
+    try {
+      await ddbClient.send(updateParams);
+
+      console.log(
+        `Order ${orderId} marked as PROCESSING at ${processingStartedAt}`
+      );
+    } catch (error) {
+      console.error(
+        `Failed to update order ${orderId} to PROCESSING:`,
+        error
+      );
+    }
+
+    const sqsPayload = {
+      orderId,
+      customerName,
+      amount,
+      product,
+      notes,
+      createdAt,
+      processingStartedAt,
+    };
+
+    const sendCommand = new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify(sqsPayload),
+    });
+
+    try {
+      await sqsClient.send(sendCommand);
+
+      console.log(
+        `Order ${orderId} sent to SQS queue for worker processing`
+      );
+    } catch (error) {
+      console.error(
+        `Failed to send order ${orderId} to SQS:`,
+        error
+      );
+    }
+  }
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify({
+      message: "Stream processed and sent to SQS",
+    }),
+  };
+};
+```
+
+After updating the code, I deployed the Lambda function.
+
+![Updated ProcessOrderFunction code](./images/40-process-order-sqs-code.png)
+
+New orders will now move from:
+
+```text
+PENDING → PROCESSING
+```
+
+before being sent to SQS.
+
+---
+
+## Step 4: Create the OrderWorkerFunction
+
+Next, I created a dedicated worker Lambda that consumes messages from the SQS queue.
+
+The worker is responsible for determining whether an order should:
+
+- Complete successfully
+- Fail because of a business rule
+- Throw a technical error and retry
+
+---
+
+### Create the Lambda Function
+
+### Configuration
+
+- **Function name:** `OrderWorkerFunction`
+- **Runtime:** `Node.js 24.x`
+- **Execution role:** `OrderServiceLambdaRole`
+
+![OrderWorkerFunction configuration](./images/41-order-worker-lambda-function.png)
+
+---
+
+### Add the Environment Variable
+
+I added the DynamoDB table name to the worker Lambda.
+
+```text
+ORDERS_TABLE_NAME = Orders
+```
+
+![OrderWorkerFunction environment variable](./images/42-order-worker-environment-variable.png)
+
+---
+
+### Add the SQS Trigger
+
+I connected `order-processing-queue` to `OrderWorkerFunction`.
+
+### Trigger Configuration
+
+- **Trigger:** SQS
+- **Queue:** `order-processing-queue`
+- **Activate trigger:** Enabled
+- **Batch size:** `5`
+
+![OrderWorkerFunction SQS trigger](./images/43-order-worker-sqs-trigger.png)
+
+---
+
+### Add OrderWorkerFunction Code
+
+The worker processes three different outcomes:
+
+- Normal orders → `COMPLETED`
+- Orders over the business limit → `FAILED`
+- Messages containing `FAIL` → technical error and retry
+
+```javascript
+import { DynamoDBClient, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+
+const ddbClient = new DynamoDBClient();
+const tableName = process.env.ORDERS_TABLE_NAME;
+
+export const handler = async (event) => {
+  console.log("Received SQS event:", JSON.stringify(event, null, 2));
+
+  for (const record of event.Records) {
+    const body = record.body;
+    let order;
+
+    try {
+      order = JSON.parse(body);
+    } catch (error) {
+      console.error("Failed to parse message body as JSON:", body);
+      throw error;
+    }
+
+    const {
+      orderId,
+      customerName,
+      amount,
+      product,
+      notes,
+      processingStartedAt,
+    } = order;
+
+    console.log(
+      `Worker processing order ${orderId} for ${customerName}, amount: ${amount}, product: ${product}`
+    );
+
+    if (
+      typeof notes === "string" &&
+      notes.toUpperCase().includes("FAIL")
+    ) {
+      console.error(
+        `Simulated technical failure for order ${orderId} (notes contained 'FAIL')`
+      );
+
+      throw new Error(
+        `Simulated worker failure for order ${orderId}`
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    if (amount > 10000) {
+      const failCommand = new UpdateItemCommand({
+        TableName: tableName,
+        Key: {
+          orderId: { S: orderId },
+        },
+        UpdateExpression:
+          "SET #s = :status, failureReason = :reason, failedAt = :failedAt",
+        ExpressionAttributeNames: {
+          "#s": "status",
+        },
+        ExpressionAttributeValues: {
+          ":status": { S: "FAILED" },
+          ":reason": { S: "AMOUNT_ABOVE_LIMIT" },
+          ":failedAt": { S: now },
+        },
+      });
+
+      try {
+        await ddbClient.send(failCommand);
+
+        console.log(
+          `Order ${orderId} marked as FAILED (amount above limit)`
+        );
+      } catch (error) {
+        console.error(
+          `Failed to update order ${orderId} to FAILED:`,
+          error
+        );
+      }
+
+      continue;
+    }
+
+    const completeCommand = new UpdateItemCommand({
+      TableName: tableName,
+      Key: {
+        orderId: { S: orderId },
+      },
+      UpdateExpression:
+        "SET #s = :status, completedAt = :completedAt",
+      ExpressionAttributeNames: {
+        "#s": "status",
+      },
+      ExpressionAttributeValues: {
+        ":status": { S: "COMPLETED" },
+        ":completedAt": { S: now },
+      },
+    });
+
+    try {
+      await ddbClient.send(completeCommand);
+
+      console.log(
+        `Order ${orderId} marked as COMPLETED by worker`
+      );
+    } catch (error) {
+      console.error(
+        `Failed to update order ${orderId} to COMPLETED:`,
+        error
+      );
+
+      throw error;
+    }
+  }
+
+  return {};
+};
+```
+
+After adding the code, I deployed `OrderWorkerFunction`.
+
+---
+
+## Order Processing Rules
+
+The worker now supports three processing paths.
+
+### Successful Order
+
+A normal order will be updated to:
+
+```text
+status = COMPLETED
+completedAt = <timestamp>
+```
+
+### Business Failure
+
+If:
+
+```text
+amount > 10000
+```
+
+the order will be updated to:
+
+```text
+status = FAILED
+failureReason = AMOUNT_ABOVE_LIMIT
+failedAt = <timestamp>
+```
+
+This type of failure does not require a retry.
+
+### Technical Failure
+
+If the order notes contain:
+
+```text
+FAIL
+```
+
+the Lambda intentionally throws an error.
+
+SQS will retry the message and eventually move it to the DLQ after the maximum receive count is reached.
+
+---
+
+## Step 5: Test the Normal Order Path
+
+I first tested the successful order workflow.
+
+### Test Order
+
+- **Customer Name:** `Normal User`
+- **Product:** `Demo Product`
+- **Amount:** `1200`
+- **Notes:** `Normal order`
+
+![Normal order test](./images/44-normal-order-test.png)
+
+After submitting the order, the expected lifecycle is:
+
+```text
+PENDING → PROCESSING → COMPLETED
+```
+
+In DynamoDB, the final order should show:
+
+```text
+status = COMPLETED
+completedAt = <timestamp>
+```
+
+![Normal order completed in DynamoDB](./images/45-normal-order-completed.png)
+
+---
+
+### Verify ProcessOrderFunction Logs
+
+CloudWatch should show messages confirming that the order was:
+
+```text
+marked as PROCESSING
+sent to SQS
+```
+
+![ProcessOrderFunction SQS CloudWatch logs](./images/46-process-order-sqs-cloudwatch-logs.png)
+
+---
+
+### Verify OrderWorkerFunction Logs
+
+The worker logs should show:
+
+```text
+Worker processing order
+Order ... marked as COMPLETED
+```
+
+![OrderWorkerFunction completed logs](./images/47-order-worker-completed-logs.png)
+
+---
+
+### Verify the SQS Queues
+
+After successful processing, there should be no remaining messages in the main processing queue.
+
+![Order processing queue empty](./images/48-order-processing-queue-empty.png)
+
+The Dead-Letter Queue should also remain empty.
+
+![Order processing DLQ empty](./images/49-order-processing-dlq-empty.png)
+
+---
+
+## Step 6: Test the Business Failure Path
+
+Next, I tested a valid order that violates the business rule.
+
+### Test Order
+
+- **Customer Name:** `High Value User`
+- **Product:** `Demo Product`
+- **Amount:** `20000`
+- **Notes:** `High value order`
+
+![High-value business failure test](./images/50-high-value-order-test.png)
+
+The expected lifecycle is:
+
+```text
+PENDING → PROCESSING → FAILED
+```
+
+DynamoDB should show:
+
+```text
+status = FAILED
+failureReason = AMOUNT_ABOVE_LIMIT
+failedAt = <timestamp>
+```
+
+![High-value order failed in DynamoDB](./images/51-high-value-order-failed.png)
+
+Because this is a business-rule rejection rather than a technical failure, the worker does not throw an exception.
+
+The SQS message is considered successfully processed and should not enter the DLQ.
+
+![Business failure SQS result](./images/52-business-failure-sqs-result.png)
+
+---
+
+## Step 7: Test the Technical Failure and DLQ Path
+
+Finally, I tested the retry and Dead-Letter Queue behavior.
+
+### Test Order
+
+- **Customer Name:** `Failing User`
+- **Product:** `Demo Product`
+- **Amount:** `1500`
+- **Notes:** `Please FAIL this order`
+
+![Technical failure test order](./images/53-technical-failure-test.png)
+
+Because the notes contain `FAIL`, `OrderWorkerFunction` intentionally throws an error.
+
+The order will move from:
+
+```text
+PENDING → PROCESSING
+```
+
+and may remain in `PROCESSING` because the worker never reaches the normal completion or business-failure update.
+
+![Technical failure order in PROCESSING](./images/54-technical-failure-processing.png)
+
+---
+
+### Retry Behavior
+
+The processing flow is:
+
+```text
+order-processing-queue
+        ↓
+OrderWorkerFunction
+        ↓
+Technical error
+        ↓
+SQS retry
+        ↓
+SQS retry
+        ↓
+SQS retry
+        ↓
+order-processing-dlq
+```
+
+CloudWatch Logs should show repeated worker failures for the same order.
+
+![OrderWorkerFunction retry failures](./images/55-order-worker-retry-failures.png)
+
+---
+
+### Verify the Dead-Letter Queue
+
+After the message exceeds the configured maximum receive count, it should be moved to:
+
+```text
+order-processing-dlq
+```
+
+I opened:
+
+```text
+SQS → order-processing-dlq → Send and receive messages
+```
+
+and polled the queue.
+
+![Dead-Letter Queue message available](./images/56-order-processing-dlq-message.png)
+
+The message body contains the original order payload, which can be inspected for troubleshooting.
+
+![Dead-Letter Queue message payload](./images/57-order-processing-dlq-payload.png)
+
+---
+
+## Completion
+
+The order processing system now includes a more reliable asynchronous workflow.
+
+The order lifecycle supports:
+
+```text
+PENDING → PROCESSING → COMPLETED / FAILED
+```
+
+The architecture now includes:
+
+- Amazon SQS for asynchronous order processing
+- Automatic retry handling
+- A dedicated `OrderWorkerFunction`
+- Business-rule validation
+- Technical failure simulation
+- Dead-Letter Queue handling
+- CloudWatch logging
+- Failed-message inspection
+
+The updated event-driven workflow is:
+
+```text
+DynamoDB Streams
+       ↓
+ProcessOrderFunction
+       ↓
+Amazon SQS
+       ↓
+OrderWorkerFunction
+       ↓
+DynamoDB
+```
+
+Business failures are recorded directly in DynamoDB, while technical failures are automatically retried and eventually isolated in the DLQ.
+
+The next stage will introduce **EventBridge Pipes** for routing specific orders into dedicated processing workflows.
+
+---
