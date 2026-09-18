@@ -478,7 +478,7 @@ The form collects:
 Inside the frontend JavaScript, I replaced the placeholder API URL:
 
 ```javascript
-const API_URL = "https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com/prod/order";
+const API_URL = "https://1vexsjjixi.execute-api.us-east-1.amazonaws.com/prod/order";
 ```
 
 with the actual API Gateway endpoint.
