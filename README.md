@@ -1717,6 +1717,6 @@ DynamoDB
 
 Business failures are recorded directly in DynamoDB, while technical failures are automatically retried and eventually isolated in the DLQ.
 
-The next stage will introduce **EventBridge Pipes** for routing specific orders into dedicated processing workflows.
+The next stage will introduce **EventBridge Pipes** for routing specific orders into dedicated processing workflows. 
 
 ---
