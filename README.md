@@ -2310,3 +2310,571 @@ The system now demonstrates:
 This pattern can be extended to support fraud review, VIP workflows, priority fulfillment, finance approvals, or other specialized processing requirements.
 
 ---
+
+# 4.6 Observability and Alerts
+
+---
+
+## Overview
+
+The event-driven order processing system is now fully functional.
+
+Orders move through the processing pipeline, failed messages are retried automatically, and messages that cannot be processed are isolated in the Dead-Letter Queue.
+
+The final stage of the project adds **observability and alerting** so failures can be detected without manually checking AWS services.
+
+In this section, I will configure:
+
+- Amazon SNS for alert notifications
+- A CloudWatch alarm for DLQ activity
+- Email notifications when failures occur
+- End-to-end tests for normal and failed orders
+
+This adds an operational monitoring layer to the event-driven architecture.
+
+---
+
+## Step 1: Create an SNS Topic for Alerts
+
+I first created an Amazon SNS topic that CloudWatch can use to send failure notifications.
+
+### SNS Topic Configuration
+
+- **Topic name:** `order-processing-alerts`
+
+![Order processing SNS alert topic](./images/77-order-processing-alerts-topic.png)
+
+### Topic Type
+
+I configured the SNS topic as:
+
+```text
+Standard
+```
+
+![SNS topic Standard type](./images/78-sns-topic-standard-type.png)
+
+After reviewing the configuration, I created the topic.
+
+---
+
+### Create an Email Subscription
+
+Next, I added an email subscription to the SNS topic.
+
+### Subscription Configuration
+
+- **Protocol:** Email
+- **Endpoint:** My notification email address
+- **Topic:** `order-processing-alerts`
+
+![SNS email subscription](./images/79-sns-email-subscription.png)
+
+AWS sent a confirmation message to the configured email address.
+
+I confirmed the subscription so SNS could deliver future CloudWatch alarm notifications.
+
+![SNS email subscription confirmed](./images/80-sns-subscription-confirmed.png)
+
+The alert topic is now ready to receive notifications.
+
+---
+
+## Step 2: Create a CloudWatch Alarm for DLQ Messages
+
+The Dead-Letter Queue is one of the clearest indicators that order processing has failed.
+
+For this project, the alarm will trigger whenever at least one message becomes visible in:
+
+```text
+order-processing-dlq
+```
+
+I opened:
+
+```text
+CloudWatch → Alarms → Create alarm
+```
+
+and selected:
+
+```text
+SQS → By Queue Name
+```
+
+### Metric
+
+I selected:
+
+```text
+Queue: order-processing-dlq
+Metric: ApproximateNumberOfMessagesVisible
+```
+
+![DLQ CloudWatch metric](./images/81-dlq-cloudwatch-metric.png)
+
+---
+
+### Configure the Alarm Condition
+
+I configured the alarm with:
+
+```text
+Period: 1 minute
+Threshold: Greater than or equal to 1
+```
+
+![DLQ alarm condition](./images/82-dlq-alarm-condition.png)
+
+This means the alarm can trigger whenever one or more messages are waiting in the DLQ.
+
+---
+
+### Configure the SNS Notification
+
+For the alarm notification action, I selected the SNS topic:
+
+```text
+order-processing-alerts
+```
+
+![CloudWatch alarm SNS notification](./images/83-dlq-alarm-sns-notification.png)
+
+---
+
+### Name the Alarm
+
+I named the CloudWatch alarm:
+
+```text
+order-processing-alarm
+```
+
+![Order processing CloudWatch alarm](./images/84-order-processing-alarm.png)
+
+The monitoring workflow is now:
+
+```text
+order-processing-dlq
+        ↓
+CloudWatch Alarm
+        ↓
+order-processing-alerts
+        ↓
+SNS Email Notification
+```
+
+---
+
+## Step 3: Test the Alerting Flow
+
+I tested two scenarios:
+
+1. A successful order that should not trigger an alert
+2. A technical failure that should reach the DLQ and trigger the alert
+
+---
+
+## Test A: Normal Processing
+
+First, I submitted a normal order through the frontend application.
+
+### Test Order
+
+- **Customer Name:** `Test User`
+- **Product:** `Sample Item`
+- **Amount:** `100`
+
+![Normal observability test order](./images/85-observability-normal-order-test.png)
+
+The order should move through the normal processing workflow without generating a failure.
+
+---
+
+### Verify the Main Queue Is Empty
+
+After processing completed, I checked:
+
+```text
+SQS → order-processing-queue
+```
+
+The queue should show no waiting messages.
+
+![Main processing queue empty](./images/86-main-queue-empty-normal-test.png)
+
+---
+
+### Verify the Alarm Remains OK
+
+Next, I opened:
+
+```text
+CloudWatch → Alarms
+```
+
+The DLQ alarm should remain:
+
+```text
+OK
+```
+
+![DLQ alarm in OK state](./images/87-dlq-alarm-ok.png)
+
+This confirms that normal orders do not trigger failure notifications.
+
+---
+
+## Test B: Technical Failure and Alert
+
+Next, I tested the failure-detection workflow.
+
+The existing `OrderWorkerFunction` uses a simulated technical failure whenever the order notes contain:
+
+```text
+FAIL
+```
+
+This causes the Lambda to throw an error, allowing SQS retries to occur before the message is eventually moved into the DLQ.
+
+---
+
+### Verify OrderWorkerFunction Failure Logic
+
+The worker continues to support three processing outcomes:
+
+```text
+Normal order
+→ COMPLETED
+
+Amount > 10000
+→ FAILED
+
+Notes contain "FAIL"
+→ Technical error
+→ SQS retries
+→ DLQ
+```
+
+The lesson code contains missing JavaScript template-string backticks in several places, so the syntax-corrected version is:
+
+```javascript
+import { DynamoDBClient, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+
+const ddbClient = new DynamoDBClient();
+const tableName = process.env.ORDERS_TABLE_NAME;
+
+export const handler = async (event) => {
+  console.log("Received SQS event:", JSON.stringify(event, null, 2));
+
+  for (const record of event.Records) {
+    const body = record.body;
+    let order;
+
+    try {
+      order = JSON.parse(body);
+    } catch (error) {
+      console.error("Failed to parse message body as JSON:", body);
+      throw error;
+    }
+
+    const {
+      orderId,
+      customerName,
+      amount,
+      product,
+      notes,
+      processingStartedAt,
+    } = order;
+
+    console.log(
+      `Worker processing order ${orderId} for ${customerName}, amount: ${amount}, product: ${product}`
+    );
+
+    if (
+      typeof notes === "string" &&
+      notes.toUpperCase().includes("FAIL")
+    ) {
+      console.error(
+        `Simulated technical failure for order ${orderId} (notes contained 'FAIL')`
+      );
+
+      throw new Error(
+        `Simulated worker failure for order ${orderId}`
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    if (amount > 10000) {
+      const failCommand = new UpdateItemCommand({
+        TableName: tableName,
+        Key: {
+          orderId: { S: orderId },
+        },
+        UpdateExpression:
+          "SET #s = :status, failureReason = :reason, failedAt = :failedAt",
+        ExpressionAttributeNames: {
+          "#s": "status",
+        },
+        ExpressionAttributeValues: {
+          ":status": { S: "FAILED" },
+          ":reason": { S: "AMOUNT_ABOVE_LIMIT" },
+          ":failedAt": { S: now },
+        },
+      });
+
+      try {
+        await ddbClient.send(failCommand);
+
+        console.log(
+          `Order ${orderId} marked as FAILED (amount above limit)`
+        );
+      } catch (error) {
+        console.error(
+          `Failed to update order ${orderId} to FAILED:`,
+          error
+        );
+      }
+
+      continue;
+    }
+
+    const completeCommand = new UpdateItemCommand({
+      TableName: tableName,
+      Key: {
+        orderId: { S: orderId },
+      },
+      UpdateExpression:
+        "SET #s = :status, completedAt = :completedAt",
+      ExpressionAttributeNames: {
+        "#s": "status",
+      },
+      ExpressionAttributeValues: {
+        ":status": { S: "COMPLETED" },
+        ":completedAt": { S: now },
+      },
+    });
+
+    try {
+      await ddbClient.send(completeCommand);
+
+      console.log(
+        `Order ${orderId} marked as COMPLETED by worker.`
+      );
+    } catch (error) {
+      console.error(
+        `Failed to update order ${orderId} to COMPLETED:`,
+        error
+      );
+
+      throw error;
+    }
+  }
+
+  return {};
+};
+```
+
+After confirming the code, I deployed `OrderWorkerFunction`.
+
+![OrderWorkerFunction alert test code](./images/88-order-worker-alert-test-code.png)
+
+---
+
+### Submit a Technical Failure
+
+I submitted an order designed to trigger the simulated technical failure.
+
+### Test Order
+
+- **Customer Name:** `Failing User`
+- **Product:** `Demo Product`
+- **Amount:** `1500`
+- **Notes:** `Please FAIL this order`
+
+![Alerting failure test order](./images/89-alerting-failure-test.png)
+
+Because the notes contain `FAIL`, `OrderWorkerFunction` throws an exception.
+
+SQS retries the message until the configured retry limit is reached.
+
+The failed message is then moved into:
+
+```text
+order-processing-dlq
+```
+
+---
+
+### Verify the Message Reached the DLQ
+
+I opened:
+
+```text
+SQS → order-processing-dlq
+```
+
+and confirmed that the failed message appeared in the queue.
+
+![Failed message in DLQ](./images/90-dlq-failed-message-alert-test.png)
+
+This confirms that the retry and DLQ workflow is functioning.
+
+---
+
+### Verify the CloudWatch Alarm
+
+After the DLQ metric detected the message, I opened:
+
+```text
+CloudWatch → Alarms
+```
+
+The `order-processing-alarm` should transition from:
+
+```text
+OK
+```
+
+to:
+
+```text
+ALARM
+```
+
+![DLQ CloudWatch alarm in ALARM state](./images/91-dlq-alarm-alarm-state.png)
+
+This confirms that CloudWatch detected the DLQ activity.
+
+---
+
+### Verify the SNS Email Notification
+
+Finally, I checked the configured email inbox.
+
+SNS should deliver a CloudWatch alarm notification indicating that:
+
+```text
+order-processing-alarm
+```
+
+entered the `ALARM` state.
+
+![SNS CloudWatch alarm email](./images/92-sns-email-alert.png)
+
+This confirms the complete monitoring workflow:
+
+```text
+Technical Failure
+       ↓
+SQS Retries
+       ↓
+Dead-Letter Queue
+       ↓
+CloudWatch Alarm
+       ↓
+Amazon SNS
+       ↓
+Email Alert
+```
+
+---
+
+## Completion
+
+The event-driven backend now includes an operational observability layer.
+
+The completed system supports:
+
+- Automatic detection of message-processing failures
+- SQS retry handling
+- Dead-Letter Queue isolation
+- CloudWatch monitoring
+- DLQ-based alarms
+- Amazon SNS notifications
+- Email alerts
+- End-to-end validation of both healthy and failed processing paths
+
+The alerting workflow is:
+
+```text
+Failed Order
+    ↓
+OrderWorkerFunction
+    ↓
+Automatic SQS Retries
+    ↓
+order-processing-dlq
+    ↓
+CloudWatch Alarm
+    ↓
+order-processing-alerts
+    ↓
+Email Notification
+```
+
+With observability and alerting configured, the event-driven order processing platform can now detect failures and notify the team automatically instead of relying on manual monitoring.
+
+---
+
+# 4.7 Conclusion
+
+---
+
+## Conclusion
+
+This project gave me hands-on experience building a complete **event-driven order processing system on AWS**.
+
+I started with a simple order submission flow and expanded it into a backend that could process orders asynchronously, handle failures, retry messages, route high-value orders, and send alerts when issues occurred.
+
+Throughout the project, I worked with:
+
+- **Amazon API Gateway**
+- **AWS Lambda**
+- **Amazon DynamoDB**
+- **DynamoDB Streams**
+- **Amazon SQS**
+- **Dead-Letter Queues**
+- **Amazon EventBridge Pipes**
+- **Amazon CloudWatch**
+- **Amazon SNS**
+- **AWS IAM**
+
+The main processing flow I built was:
+
+```text
+Frontend
+   ↓
+API Gateway
+   ↓
+Lambda
+   ↓
+DynamoDB
+   ↓
+DynamoDB Streams
+   ↓
+SQS
+   ↓
+Worker Lambda
+   ↓
+Order Status Update
+```
+
+I learned how to separate **business failures** from **technical failures**, use SQS retries and a DLQ for failed messages, and route high-value orders through a dedicated EventBridge Pipe workflow.
+
+I also added monitoring with CloudWatch and SNS so the system could automatically detect DLQ activity and send an email alert when a processing failure occurred.
+
+One of the biggest skills I gained from this project was learning how to troubleshoot an event-driven architecture by tracing events through each AWS service and using logs, queues, database records, and alarm states to identify where a problem occurred.
+
+By the end of the project, I had built and tested a backend that was:
+
+- **Serverless**
+- **Event-driven**
+- **Asynchronous**
+- **Loosely coupled**
+- **Fault tolerant**
+- **Observable**
+- **Capable of automated failure handling**
+
+This project strengthened my understanding of how AWS managed services can work together to build reliable and scalable cloud applications.
