@@ -1922,12 +1922,15 @@ I then configured the **Target Input Transformer**.
 
 ### Sample Event
 
+The sample event uses example values so EventBridge can preview the transformation:
+
 ```json
 {
-  "orderId": <$.body.orderId>,
-  "amount": <$.body.amount>,
-  "product": <$.body.product>,
-  "priority": "HIGH_VALUE"
+  "body": {
+    "orderId": "test-order-123",
+    "amount": 25000,
+    "product": "Demo Product"
+  }
 }
 ```
 
@@ -2169,7 +2172,7 @@ There should be no new processing logs for the normal order inside:
 /aws/lambda/HighValueWorkerFunction
 ```
 
-![HighValueWorkerFunction no normal-order invocation](./images/73-high-value-worker-no-route.png)
+![HighValueWorkerFunction no normal-order invocation](./images/73-high-value-pipe-no-route.png)
 
 This confirms:
 
@@ -2191,8 +2194,8 @@ Next, I submitted an order that satisfies the Pipe filter.
 
 - **Customer Name:** `High Value User`
 - **Amount:** `25000`
-- **Product:** Any test product
-- **Notes:** Any normal test notes
+- **Product:** Gabbit Ring
+- **Notes:** No Specs
 
 ![High-value routing test](./images/74-high-value-routing-test.png)
 
